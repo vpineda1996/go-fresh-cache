@@ -1,4 +1,4 @@
-package zcache
+package freshcache
 
 import (
 	"reflect"
@@ -6,7 +6,7 @@ import (
 )
 
 func TestProxy(t *testing.T) {
-	c := New[string, any](NoExpiration, 0)
+	c := New[string, any](100, NoExpiration, 0)
 	pc := NewProxy[string, string, any](c)
 
 	has := func(v any, ok bool) {

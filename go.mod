@@ -1,3 +1,3 @@
-module zgo.at/zcache/v2
+module github.com/vpineda1996/freshcache
 
 go 1.18

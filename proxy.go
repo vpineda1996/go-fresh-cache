@@ -1,4 +1,4 @@
-package zcache
+package freshcache
 
 import (
 	"sync"
@@ -66,7 +66,7 @@ func (p *Proxy[ProxyK, MainK, V]) Cache() *Cache[MainK, V] {
 // Set a new item in the main cache with the key mainKey, and proxy to that with
 // proxyKey.
 //
-// This behaves like zcache.Cache.Set() otherwise.
+// This behaves like freshcache.Cache.Set() otherwise.
 func (p *Proxy[ProxyK, MainK, V]) Set(mainKey MainK, proxyKey ProxyK, v V) {
 	p.mu.Lock()
 	p.m[proxyKey] = mainKey
@@ -74,7 +74,7 @@ func (p *Proxy[ProxyK, MainK, V]) Set(mainKey MainK, proxyKey ProxyK, v V) {
 	p.cache.Set(mainKey, v)
 }
 
-// Get a proxied cache item with zcache.Cache.Get()
+// Get a proxied cache item with freshcache.Cache.Get()
 func (p *Proxy[ProxyK, MainK, V]) Get(proxyKey ProxyK) (V, bool) {
 	p.mu.RLock()
 	mainKey, ok := p.m[proxyKey]

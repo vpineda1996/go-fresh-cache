@@ -1,10 +1,10 @@
-package zcache_test
+package freshcache_test
 
 import (
 	"fmt"
 	"time"
 
-	"zgo.at/zcache/v2"
+	"github.com/vpineda1996/freshcache"
 )
 
 func ExampleCache_simple() {
@@ -13,14 +13,14 @@ func ExampleCache_simple() {
 	//
 	// This creates a cache with string keys and values, with Go 1.18 type
 	// parameters.
-	c := zcache.New[string, string](5*time.Minute, 10*time.Minute)
+	c := freshcache.New[string, string](100, 5*time.Minute, 10*time.Minute)
 
 	// Set the value of the key "foo" to "bar", with the default expiration.
 	c.Set("foo", "bar")
 
 	// Set the value of the key "baz" to "never", with no expiration time. The
 	// item won't be removed until it's removed with c.Delete("baz").
-	c.SetWithExpire("baz", "never", zcache.NoExpiration)
+	c.SetWithExpire("baz", "never", freshcache.NoExpiration)
 
 	// Get the value associated with the key "foo" from the cache; due to the
 	// use of type parameters this is a string, and no type assertions are
@@ -37,19 +37,19 @@ func ExampleCache_struct() {
 	type MyStruct struct{ Value string }
 
 	// Create a new cache that stores a specific struct.
-	c := zcache.New[string, *MyStruct](zcache.NoExpiration, zcache.NoExpiration)
+	c := freshcache.New[string, *MyStruct](100, freshcache.NoExpiration, freshcache.NoExpiration)
 	c.Set("cache", &MyStruct{Value: "value"})
 
 	v, _ := c.Get("cache")
 	fmt.Printf("%#v\n", v)
 
-	// Output: &zcache_test.MyStruct{Value:"value"}
+	// Output: &freshcache_test.MyStruct{Value:"value"}
 }
 
 func ExampleCache_any() {
-	// Create a new cache that stores any value, behaving similar to zcache v1
+	// Create a new cache that stores any value, behaving similar to freshcache v1
 	// or go-cache.
-	c := zcache.New[string, any](zcache.NoExpiration, zcache.NoExpiration)
+	c := freshcache.New[string, any](100, freshcache.NoExpiration, freshcache.NoExpiration)
 
 	c.Set("a", "value 1")
 	c.Set("b", 42)
@@ -77,8 +77,8 @@ func ExampleProxy() {
 
 	// Create a new site which caches by site ID (int), and a "proxy" which
 	// caches by the hostname (string).
-	c := zcache.New[int, *Site](zcache.NoExpiration, zcache.NoExpiration)
-	p := zcache.NewProxy[string, int, *Site](c)
+	c := freshcache.New[int, *Site](100, freshcache.NoExpiration, freshcache.NoExpiration)
+	p := freshcache.NewProxy[string, int, *Site](c)
 
 	p.Set(42, "example.com", site)
 

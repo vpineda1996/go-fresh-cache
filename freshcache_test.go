@@ -1,4 +1,4 @@
-package zcache
+package freshcache
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func wantKeys(t *testing.T, tc *Cache[string, any], want []string, dontWant []st
 }
 
 func TestCache(t *testing.T) {
-	tc := New[string, any](DefaultExpiration, 0)
+	tc := New[string, any](100, DefaultExpiration, 0)
 
 	a, found := tc.Get("a")
 	if found || a != nil {
@@ -88,7 +89,7 @@ func TestCache(t *testing.T) {
 func TestCacheTimes(t *testing.T) {
 	var found bool
 
-	tc := New[string, int](50*time.Millisecond, 1*time.Millisecond)
+	tc := New[string, int](100, 50*time.Millisecond, 1*time.Millisecond)
 	tc.Set("a", 1)
 	tc.SetWithExpire("b", 2, NoExpiration)
 	tc.SetWithExpire("c", 3, 20*time.Millisecond)
@@ -123,41 +124,13 @@ func TestCacheTimes(t *testing.T) {
 	}
 }
 
-func TestNewFrom(t *testing.T) {
-	m := map[string]Item[int]{
-		"a": {
-			Object:     1,
-			Expiration: 0,
-		},
-		"b": {
-			Object:     2,
-			Expiration: 0,
-		},
-	}
-	tc := NewFrom[string, int](DefaultExpiration, 0, m)
-	a, found := tc.Get("a")
-	if !found {
-		t.Fatal("Did not find a")
-	}
-	if a != 1 {
-		t.Fatal("a is not 1")
-	}
-	b, found := tc.Get("b")
-	if !found {
-		t.Fatal("Did not find b")
-	}
-	if b != 2 {
-		t.Fatal("b is not 2")
-	}
-}
-
 func TestStorePointerToStruct(t *testing.T) {
 	type TestStruct struct {
 		Num      int
 		Children []*TestStruct
 	}
 
-	tc := New[string, any](DefaultExpiration, 0)
+	tc := New[string, any](100, DefaultExpiration, 0)
 	tc.Set("foo", &TestStruct{Num: 1})
 	v, found := tc.Get("foo")
 	if !found {
@@ -177,7 +150,7 @@ func TestStorePointerToStruct(t *testing.T) {
 }
 
 func TestOnEvicted(t *testing.T) {
-	tc := New[string, int](DefaultExpiration, 0)
+	tc := New[string, int](100, DefaultExpiration, 0)
 	tc.Set("foo", 3)
 	if tc.onEvicted != nil {
 		t.Fatal("tc.onEvicted is not nil")
@@ -200,7 +173,7 @@ func TestOnEvicted(t *testing.T) {
 }
 
 func TestTouch(t *testing.T) {
-	tc := New[string, string](DefaultExpiration, 0)
+	tc := New[string, string](100, DefaultExpiration, 0)
 
 	tc.SetWithExpire("a", "b", 5*time.Second)
 	_, first, _ := tc.GetWithExpire("a")
@@ -218,7 +191,7 @@ func TestTouch(t *testing.T) {
 }
 
 func TestGetWithExpire(t *testing.T) {
-	tc := New[string, any](DefaultExpiration, 0)
+	tc := New[string, any](100, DefaultExpiration, 0)
 
 	a, expiration, ok := tc.GetWithExpire("a")
 	if ok || a != nil || !expiration.IsZero() {
@@ -311,7 +284,7 @@ func TestGetWithExpire(t *testing.T) {
 }
 
 func TestGetStale(t *testing.T) {
-	tc := New[string, any](5*time.Millisecond, 0)
+	tc := New[string, any](100, 5*time.Millisecond, 0)
 
 	tc.Set("x", "y")
 
@@ -346,7 +319,7 @@ func TestGetStale(t *testing.T) {
 }
 
 func TestAdd(t *testing.T) {
-	tc := New[string, any](DefaultExpiration, 0)
+	tc := New[string, any](100, DefaultExpiration, 0)
 	err := tc.Add("foo", "bar")
 	if err != nil {
 		t.Error("Couldn't add foo even though it shouldn't exist")
@@ -358,7 +331,7 @@ func TestAdd(t *testing.T) {
 }
 
 func TestReplace(t *testing.T) {
-	tc := New[string, string](DefaultExpiration, 0)
+	tc := New[string, string](100, DefaultExpiration, 0)
 	err := tc.Replace("foo", "bar")
 	if err == nil {
 		t.Error("Replaced foo when it shouldn't exist")
@@ -371,7 +344,7 @@ func TestReplace(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	tc := New[string, any](DefaultExpiration, 0)
+	tc := New[string, any](100, DefaultExpiration, 0)
 
 	tc.Set("foo", "bar")
 	tc.Delete("foo")
@@ -399,7 +372,7 @@ func (o *onEvictTest) add(k string, v interface{}) {
 }
 
 func TestPop(t *testing.T) {
-	tc := New[string, any](DefaultExpiration, 0)
+	tc := New[string, any](100, DefaultExpiration, 0)
 
 	var onEvict onEvictTest
 	tc.OnEvicted(onEvict.add)
@@ -429,7 +402,7 @@ func TestPop(t *testing.T) {
 }
 
 func TestModify(t *testing.T) {
-	tc := New[string, []string](DefaultExpiration, 0)
+	tc := New[string, []string](100, DefaultExpiration, 0)
 
 	tc.Set("k", []string{"x"})
 	v, ok := tc.Modify("k", func(v []string) []string {
@@ -460,7 +433,7 @@ func TestModify(t *testing.T) {
 }
 
 func TestModifyIncrement(t *testing.T) {
-	tc := New[string, int](DefaultExpiration, 0)
+	tc := New[string, int](100, DefaultExpiration, 0)
 	tc.Set("one", 1)
 
 	have, _ := tc.Modify("one", func(v int) int { return v + 2 })
@@ -475,7 +448,7 @@ func TestModifyIncrement(t *testing.T) {
 }
 
 func TestItems(t *testing.T) {
-	tc := New[string, any](DefaultExpiration, 1*time.Millisecond)
+	tc := New[string, any](100, DefaultExpiration, 1*time.Millisecond)
 	tc.Set("foo", "1")
 	tc.Set("bar", "2")
 	tc.Set("baz", "3")
@@ -501,8 +474,44 @@ func TestItems(t *testing.T) {
 	}
 }
 
+func TestLruIntegration(t *testing.T) {
+	tc := New[string, any](10, DefaultExpiration, 1*time.Millisecond)
+	for i := 0; i < 50; i++ {
+		tc.Set(strconv.Itoa(i), i)
+	}
+	tc.Set("foo", "1")
+	tc.Set("bar", "2")
+	tc.Set("baz", "3")
+	tc.SetWithExpire("exp", "4", 1)
+	time.Sleep(10 * time.Millisecond)
+	if n := tc.ItemCount(); n != 9 {
+		t.Errorf("Item count is not 3 but %d", n)
+	}
+
+	keys := tc.Keys()
+	sort.Strings(keys)
+	if fmt.Sprintf("%v", keys) != "[44 45 46 47 48 49 bar baz foo]" {
+		t.Errorf("%v", keys)
+	}
+
+	for i := 0; i < 50; i++ {
+		tc.Delete(strconv.Itoa(i))
+	}
+
+	fmt.Printf("%#v\n size: %d \n", tc.lru.cache, len(tc.lru.cache))
+
+	want := map[string]Item[any]{
+		"foo": {Object: "1"},
+		"bar": {Object: "2"},
+		"baz": {Object: "3"},
+	}
+	if !reflect.DeepEqual(tc.Items(), want) {
+		t.Errorf("%v", tc.Items())
+	}
+}
+
 func TestReset(t *testing.T) {
-	tc := New[string, any](DefaultExpiration, 0)
+	tc := New[string, any](100, DefaultExpiration, 0)
 	tc.Set("foo", "bar")
 	tc.Set("baz", "yes")
 	tc.Reset()
@@ -523,7 +532,7 @@ func TestReset(t *testing.T) {
 }
 
 func TestDeleteAll(t *testing.T) {
-	tc := New[string, any](DefaultExpiration, 0)
+	tc := New[string, any](100, DefaultExpiration, 0)
 	tc.Set("foo", 3)
 	if tc.onEvicted != nil {
 		t.Fatal("tc.onEvicted is not nil")
@@ -541,7 +550,7 @@ func TestDeleteAll(t *testing.T) {
 }
 
 func TestDeleteFunc(t *testing.T) {
-	tc := New[string, any](NoExpiration, 0)
+	tc := New[string, any](100, NoExpiration, 0)
 	tc.Set("foo", 3)
 	tc.Set("bar", 4)
 
@@ -584,10 +593,10 @@ func TestFinal(t *testing.T) {
 	has := func() bool {
 		s := make([]byte, 8192)
 		runtime.Stack(s, true)
-		return bytes.Contains(s, []byte("zgo.at/zcache/v2.(*janitor[...]).run"))
+		return bytes.Contains(s, []byte("github.com/vpineda1996/freshcache.(*janitor[...]).run"))
 	}
 
-	tc := New[string, any](10*time.Millisecond, 10*time.Millisecond)
+	tc := New[string, any](100, 10*time.Millisecond, 10*time.Millisecond)
 	tc.Set("asd", "zxc")
 
 	if !has() {
@@ -600,7 +609,7 @@ func TestFinal(t *testing.T) {
 }
 
 func TestRename(t *testing.T) {
-	tc := New[string, int](NoExpiration, 0)
+	tc := New[string, int](100, NoExpiration, 0)
 	tc.Set("foo", 3)
 	tc.SetWithExpire("bar", 4, 1)
 

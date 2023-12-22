@@ -1,4 +1,4 @@
-package zcache
+package freshcache
 
 import (
 	"runtime"
@@ -10,7 +10,7 @@ import (
 
 func benchmarkGet(b *testing.B, exp time.Duration) {
 	b.StopTimer()
-	tc := New[string, any](exp, 0)
+	tc := New[string, any](100, exp, 0)
 	tc.Set("foo", "bar")
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
@@ -20,7 +20,7 @@ func benchmarkGet(b *testing.B, exp time.Duration) {
 
 func benchmarkGetConcurrent(b *testing.B, exp time.Duration) {
 	b.StopTimer()
-	tc := New[string, any](exp, 0)
+	tc := New[string, any](100, exp, 0)
 	tc.Set("foo", "bar")
 	wg := new(sync.WaitGroup)
 	workers := runtime.NumCPU()
@@ -40,7 +40,7 @@ func benchmarkGetConcurrent(b *testing.B, exp time.Duration) {
 
 func benchmarkSet(b *testing.B, exp time.Duration) {
 	b.StopTimer()
-	tc := New[string, any](exp, 0)
+	tc := New[string, any](100, exp, 0)
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
 		tc.Set("foo", "bar")
@@ -135,7 +135,7 @@ func BenchmarkRWMutexMapSet(b *testing.B) {
 
 func BenchmarkCacheSetDelete(b *testing.B) {
 	b.StopTimer()
-	tc := New[string, any](DefaultExpiration, 0)
+	tc := New[string, any](100, DefaultExpiration, 0)
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
 		tc.Set("foo", "bar")
@@ -160,11 +160,11 @@ func BenchmarkRWMutexMapSetDelete(b *testing.B) {
 
 func BenchmarkCacheSetDeleteSingleLock(b *testing.B) {
 	b.StopTimer()
-	tc := New[string, any](DefaultExpiration, 0)
+	tc := New[string, any](100, DefaultExpiration, 0)
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
 		tc.mu.Lock()
-		tc.set("foo", "bar", DefaultExpiration)
+		tc.set("foo", "bar", DefaultExpiration, DefaultExpiration)
 		tc.delete("foo")
 		tc.mu.Unlock()
 	}
@@ -185,14 +185,14 @@ func BenchmarkRWMutexMapSetDeleteSingleLock(b *testing.B) {
 
 func BenchmarkDeleteExpiredLoop(b *testing.B) {
 	b.StopTimer()
-	tc := New[string, any](5*time.Minute, 0)
+	tc := New[string, any](100, 5*time.Minute, 0)
 	tc.mu.Lock()
 	for i := 0; i < 100000; i++ {
-		tc.set(strconv.Itoa(i), "bar", DefaultExpiration)
+		tc.set(strconv.Itoa(i), "bar", DefaultExpiration, DefaultExpiration)
 	}
 	tc.mu.Unlock()
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		tc.DeleteExpired()
+		tc.RefreshOrEvictExpired()
 	}
 }

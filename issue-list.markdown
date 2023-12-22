@@ -103,7 +103,7 @@ open an issue if you feel I made a mistake and we can look at it again :-)
 - [Feature request: max size and/or max objects](https://github.com/patrickmn/go-cache/issues/5)<br>
   [An Unobtrusive LRU for the best time cache I've used for go by cognusion](https://github.com/patrickmn/go-cache/pull/17)
 
-  See FAQ; maybe we can add this as a wrapper and new `zcache.LRUCache` or some
+  See FAQ; maybe we can add this as a wrapper and new `freshcache.LRUCache` or some
   such. Max size is even harder, since getting the size of an object is
   non-trivial.
 

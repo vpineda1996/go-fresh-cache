@@ -1,15 +1,15 @@
-// Package zcache is an in-memory key:value store/cache with time-based evictions.
+// Package freshcache is an in-memory key:value store/cache with time-based evictions.
 //
 // It is suitable for applications running on a single machine. Its major
 // advantage is that it's essentially a thread-safe map with expiration times.
 // Any object can be stored, for a given duration or forever, and the cache can
 // be safely used by multiple goroutines.
 //
-// Although zcache isn't meant to be used as a persistent datastore, the
+// Although freshcache isn't meant to be used as a persistent datastore, the
 // contents can be saved to and loaded from a file (using `c.Items()` to
 // retrieve the items map to serialize, and `NewFrom()` to create a cache from a
 // deserialized one) to recover from downtime quickly.
-package zcache
+package freshcache
 
 import (
 	"fmt"
@@ -21,6 +21,8 @@ import (
 const (
 	// NoExpiration indicates a cache item never expires.
 	NoExpiration time.Duration = -1
+	// NoRefresh indicates a cache item should not be refreshed.
+	NoRefresh time.Duration = -1
 
 	// DefaultExpiration indicates to use the cache default expiration time.
 	// Equivalent to passing in the same expiration duration as was given to
@@ -39,13 +41,16 @@ type (
 		items             map[K]Item[V]
 		mu                sync.RWMutex
 		onEvicted         func(K, V)
+		onRefresh         func(K, V) (V, time.Duration, bool)
 		janitor           *janitor[K, V]
+		lru               *lruCache[K, bool]
 	}
 
-	// Item stored in the cache; it holds the value and the expiration time as
+	// Item stored in both caches; it holds the value and the expiration time as
 	// timestamp.
 	Item[V any] struct {
 		Object     V
+		Refresh    int64
 		Expiration int64
 	}
 )
@@ -57,47 +62,27 @@ type (
 // cache never expire (by default) and must be deleted manually.
 //
 // If the cleanup interval is less than 1 expired items are not deleted from the
-// cache before calling c.DeleteExpired().
-func New[K comparable, V any](defaultExpiration, cleanupInterval time.Duration) *Cache[K, V] {
-	return newCacheWithJanitor(defaultExpiration, cleanupInterval, make(map[K]Item[V]))
+// cache before calling c.RefreshOrEvictExpired().
+func New[K comparable, V any](maxEntries int, defaultExpiration, cleanupInterval time.Duration) *Cache[K, V] {
+	return newCacheWithJanitor(maxEntries, defaultExpiration, cleanupInterval, make(map[K]Item[V]))
 }
 
-// NewFrom creates a new cache like New() and populates the cache with the given
-// items.
-//
-// The passed map will serve as the underlying map for the cache. This is useful
-// for starting from a deserialized cache (serialized using e.g. gob.Encode() on
-// c.Items()), or passing in e.g. make(map[string]Item, 500) to improve startup
-// performance when the cache is expected to reach a certain minimum size.
-//
-// The map is *not* copied and only the cache's methods synchronize access to this
-// map, so it is not recommended to keep any references to the map around after
-// creating a cache. If need be, the map can be accessed at a later point using
-// c.Items() (which creates a copy of the map).
-//
-// Note regarding serialization: When using e.g. gob, make sure to
-// gob.Register() the individual types stored in the cache before encoding a map
-// retrieved with c.Items() and to register those same types before decoding a
-// blob containing an items map.
-func NewFrom[K comparable, V any](defaultExpiration, cleanupInterval time.Duration, items map[K]Item[V]) *Cache[K, V] {
-	return newCacheWithJanitor(defaultExpiration, cleanupInterval, items)
-}
-
-func newCache[K comparable, V any](de time.Duration, m map[K]Item[V]) *cache[K, V] {
+func newCache[K comparable, V any](maxEntries int, de time.Duration, m map[K]Item[V]) *cache[K, V] {
 	if de == 0 {
 		de = -1
 	}
 	c := &cache[K, V]{
 		defaultExpiration: de,
 		items:             m,
+		lru:               newLRU[K, bool](maxEntries),
 	}
 	return c
 }
 
-func newCacheWithJanitor[K comparable, V any](de time.Duration, ci time.Duration, m map[K]Item[V]) *Cache[K, V] {
-	c := newCache(de, m)
+func newCacheWithJanitor[K comparable, V any](maxEntries int, de time.Duration, ci time.Duration, m map[K]Item[V]) *Cache[K, V] {
+	c := newCache(maxEntries, de, m)
 	// This trick ensures that the janitor goroutine (which is running
-	// DeleteExpired on c forever) does not keep the returned C object from
+	// RefreshOrEvictExpired on c forever) does not keep the returned C object from
 	// being garbage collected. When it is garbage collected, the finalizer
 	// stops the janitor goroutine, after which c can be collected.
 	C := &Cache[K, V]{c}
@@ -133,19 +118,40 @@ func (c *cache[K, V]) Replace(k K, v V) error { return c.ReplaceWithExpire(k, v,
 // If the duration is 0 (DefaultExpiration), the cache's default expiration time
 // is used. If it is -1 (NoExpiration), the item never expires.
 func (c *cache[K, V]) SetWithExpire(k K, v V, d time.Duration) {
+	c.SetWithRefreshExpire(k, v, NoRefresh, d)
+}
+
+// SetWithRefreshExpire sets a cache item, replacing any existing item.
+//
+// If the duration is 0 (DefaultExpiration), the cache's default expiration time
+// is used. If it is -1 (NoExpiration), the item never expires.
+func (c *cache[K, V]) SetWithRefreshExpire(k K, v V, refresh, expire time.Duration) {
 	// "Inlining" of set
-	var e int64
-	if d == DefaultExpiration {
-		d = c.defaultExpiration
+	var e, r int64
+	if expire == DefaultExpiration {
+		expire = c.defaultExpiration
 	}
-	if d > 0 {
-		e = time.Now().Add(d).UnixNano()
+	if expire > 0 {
+		e = time.Now().Add(expire).UnixNano()
+	}
+
+	if refresh == DefaultExpiration {
+		refresh = c.defaultExpiration
+	}
+	if refresh > 0 {
+		r = time.Now().Add(expire).UnixNano()
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	evictedEntry := c.lru.Add(k, true)
+	if evictedEntry != nil {
+		c.delete(evictedEntry.key)
+	}
 	c.items[k] = Item[V]{
 		Object:     v,
 		Expiration: e,
+		Refresh:    r,
 	}
 }
 
@@ -168,6 +174,7 @@ func (c *cache[K, V]) TouchWithExpire(k K, d time.Duration) (V, bool) {
 	}
 
 	item.Expiration = time.Now().Add(d).UnixNano()
+	c.lru.Get(k)
 	c.items[k] = item
 	return item.Object, true
 }
@@ -179,14 +186,24 @@ func (c *cache[K, V]) TouchWithExpire(k K, d time.Duration) (V, bool) {
 // (DefaultExpiration), the cache's default expiration time is used. If it is -1
 // (NoExpiration), the item never expires.
 func (c *cache[K, V]) AddWithExpire(k K, v V, d time.Duration) error {
+	return c.AddWithRefreshExpire(k, v, NoRefresh, d)
+}
+
+// AddWithRefreshExpire adds an item to the cache only if it doesn't exist yet, or if
+// it has expired.
+//
+// It will return an error if the cache key already exists. If the duration is 0
+// (DefaultExpiration), the cache's default expiration time is used. If it is -1
+// (NoExpiration), the item never expires.
+func (c *cache[K, V]) AddWithRefreshExpire(k K, v V, refresh, expire time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	_, ok := c.get(k)
 	if ok {
-		return fmt.Errorf("zcache.Add: item %v already exists", k)
+		return fmt.Errorf("freshcache.Add: item %v already exists", k)
 	}
-	c.set(k, v, d)
+	c.set(k, v, refresh, expire)
 	return nil
 }
 
@@ -197,14 +214,24 @@ func (c *cache[K, V]) AddWithExpire(k K, v V, d time.Duration) error {
 // (DefaultExpiration), the cache's default expiration time is used. If it is -1
 // (NoExpiration), the item never expires.
 func (c *cache[K, V]) ReplaceWithExpire(k K, v V, d time.Duration) error {
+	return c.ReplaceWithRefreshExpire(k, v, NoRefresh, d)
+}
+
+// ReplaceWithRefreshExpire sets a new value for the key only if it already exists and isn't
+// expired.
+//
+// It will return an error if the cache key doesn't exist. If the duration is 0
+// (DefaultExpiration), the cache's default expiration time is used. If it is -1
+// (NoExpiration), the item never expires.
+func (c *cache[K, V]) ReplaceWithRefreshExpire(k K, v V, refresh, expire time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	_, ok := c.get(k)
 	if !ok {
-		return fmt.Errorf("zcache.Replace: item %v doesn't exist", k)
+		return fmt.Errorf("freshcache.Replace: item %v doesn't exist", k)
 	}
-	c.set(k, v, d)
+	c.set(k, v, refresh, expire)
 	return nil
 }
 
@@ -370,12 +397,32 @@ func (c *cache[K, V]) Pop(k K) (V, bool) {
 	return item.Object, true
 }
 
-// DeleteExpired deletes all expired items from the cache.
-func (c *cache[K, V]) DeleteExpired() {
-	var evictedItems []keyAndValue[K, V]
+// RefreshOrEvictExpired refreshes all expired items from the cache. If record
+// is not refreshed, it will be evicted. While the record is being refreshed,
+// it will be not be removed from the cache
+func (c *cache[K, V]) RefreshOrEvictExpired() {
+	var itemsRequiringRefresh, evictedItems []keyAndValue[K, V]
 	now := time.Now().UnixNano()
-	c.mu.Lock()
 
+	if c.onRefresh != nil {
+		c.mu.Lock()
+		for k, v := range c.items {
+			// "Inlining" of expired
+			if v.Refresh > 0 && now > v.Refresh {
+				itemsRequiringRefresh = append(itemsRequiringRefresh, keyAndValue[K, V]{k, v.Object})
+			}
+		}
+		c.mu.Unlock()
+
+		for _, v := range itemsRequiringRefresh {
+			newV, duration, ok := c.onRefresh(v.key, v.value)
+			if ok {
+				c.SetWithExpire(v.key, newV, duration)
+			}
+		}
+	}
+
+	c.mu.Lock()
 	for k, v := range c.items {
 		// "Inlining" of expired
 		if v.Expiration > 0 && now > v.Expiration {
@@ -384,6 +431,7 @@ func (c *cache[K, V]) DeleteExpired() {
 				evictedItems = append(evictedItems, keyAndValue[K, V]{k, ov})
 			}
 		}
+
 	}
 	c.mu.Unlock()
 	for _, v := range evictedItems {
@@ -391,16 +439,28 @@ func (c *cache[K, V]) DeleteExpired() {
 	}
 }
 
-// OnEvicted sets an function to call when an item is evicted from the cache.
+// OnEvicted sets a function to call when an item is evicted from the cache.
 //
 // The function is run with the key and value. This is also run when a cache
-// item is is deleted manually, but *not* when it is overwritten.
+// item is deleted manually, but *not* when it is overwritten.
 //
 // Can be set to nil to disable it (the default).
 func (c *cache[K, V]) OnEvicted(f func(K, V)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.onEvicted = f
+}
+
+// OnRefresh sets a function to call when an item requires a refresh.
+//
+// The function is run with the key and value. This is also runs when a cache
+// item is deleted manually, but *not* when it is overwritten.
+//
+// Can be set to nil to disable it (the default).
+func (c *cache[K, V]) OnRefresh(f func(K, V) (V, time.Duration, bool)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onRefresh = f
 }
 
 // Items returns a copy of all unexpired items in the cache.
@@ -504,17 +564,29 @@ func (c *cache[K, V]) DeleteFunc(filter func(key K, item Item[V]) (del, stop boo
 	return m
 }
 
-func (c *cache[K, V]) set(k K, v V, d time.Duration) {
-	var e int64
-	if d == DefaultExpiration {
-		d = c.defaultExpiration
+func (c *cache[K, V]) set(k K, v V, refresh, expire time.Duration) {
+	var e, r int64
+	if expire == DefaultExpiration {
+		expire = c.defaultExpiration
 	}
-	if d > 0 {
-		e = time.Now().Add(d).UnixNano()
+	if expire > 0 {
+		e = time.Now().Add(expire).UnixNano()
+	}
+
+	if refresh == DefaultExpiration {
+		refresh = c.defaultExpiration
+	}
+	if refresh > 0 {
+		r = time.Now().Add(expire).UnixNano()
+	}
+	evictedEntry := c.lru.Add(k, true)
+	if evictedEntry != nil {
+		c.delete(evictedEntry.key)
 	}
 	c.items[k] = Item[V]{
 		Object:     v,
 		Expiration: e,
+		Refresh:    r,
 	}
 }
 
@@ -533,10 +605,12 @@ func (c *cache[K, V]) get(k K) (V, bool) {
 func (c *cache[K, V]) delete(k K) (V, bool) {
 	if c.onEvicted != nil {
 		if v, ok := c.items[k]; ok {
+			c.lru.Remove(k)
 			delete(c.items, k)
 			return v.Object, true
 		}
 	}
+	c.lru.Remove(k)
 	delete(c.items, k)
 
 	return c.zero(), false
@@ -562,7 +636,7 @@ func (j *janitor[K, V]) run(c *cache[K, V]) {
 	for {
 		select {
 		case <-ticker.C:
-			c.DeleteExpired()
+			c.RefreshOrEvictExpired()
 		case <-j.stop:
 			ticker.Stop()
 			return
